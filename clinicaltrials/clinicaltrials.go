@@ -1,52 +1,168 @@
-// Package clinicaltrials is the library behind the ct command line:
-// the HTTP client, request shaping, and the typed data models for clinicaltrials.
+// Package clinicaltrials is the library behind the ct command: the HTTP client,
+// request shaping, and the typed data models for ClinicalTrials.gov.
 //
-// The Client here is the spine every command shares. It sets a real
-// User-Agent, paces requests so a busy session stays polite, and retries the
-// transient failures (429 and 5xx) that any public site throws under load.
-// Build your endpoint calls and JSON decoding on top of it.
+// The public REST API v2 at https://clinicaltrials.gov/api/v2 is fully open,
+// no authentication required. The client sets a real User-Agent, paces requests
+// to 200 ms by default, and retries 429/5xx with exponential backoff.
 package clinicaltrials
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"sync"
 	"time"
 )
 
-// DefaultUserAgent identifies the client to clinicaltrials. A real, honest
-// User-Agent is both polite and the thing most likely to keep you unblocked.
+const defaultBaseURL = "https://clinicaltrials.gov/api/v2"
+
+// DefaultUserAgent identifies the client to ClinicalTrials.gov.
 const DefaultUserAgent = "ct/dev (+https://github.com/tamnd/clinicaltrials-cli)"
 
-// Client talks to clinicaltrials over HTTP.
-type Client struct {
-	HTTP      *http.Client
-	UserAgent string
-	// Rate is the minimum gap between requests. Zero means no pacing.
-	Rate    time.Duration
-	Retries int
+// ErrNotFound is returned when the API returns a 404 for an NCT ID.
+var ErrNotFound = errors.New("not found")
 
-	last time.Time
+// Config holds constructor parameters.
+type Config struct {
+	BaseURL   string
+	UserAgent string
+	Rate      time.Duration
+	Retries   int
+	Timeout   time.Duration
 }
 
-// NewClient returns a Client with sensible defaults: a 30s timeout, a 200ms
-// minimum gap between requests, and five retries on transient errors.
-func NewClient() *Client {
-	return &Client{
-		HTTP:      &http.Client{Timeout: 30 * time.Second},
+// DefaultConfig returns sensible defaults.
+func DefaultConfig() Config {
+	return Config{
+		BaseURL:   defaultBaseURL,
 		UserAgent: DefaultUserAgent,
 		Rate:      200 * time.Millisecond,
-		Retries:   5,
+		Retries:   3,
+		Timeout:   30 * time.Second,
 	}
 }
 
-// Get fetches url and returns the response body. It paces and retries according
-// to the client's settings. The caller owns nothing extra; the body is read
-// fully and closed here.
-func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
+// Client talks to the ClinicalTrials.gov REST API v2.
+type Client struct {
+	baseURL    string
+	httpClient *http.Client
+	userAgent  string
+	rate       time.Duration
+	retries    int
+	mu         sync.Mutex
+	last       time.Time
+}
+
+// NewClient returns a Client with the given config.
+func NewClient(cfg Config) *Client {
+	base := cfg.BaseURL
+	if base == "" {
+		base = defaultBaseURL
+	}
+	return &Client{
+		baseURL:    base,
+		httpClient: &http.Client{Timeout: cfg.Timeout},
+		userAgent:  cfg.UserAgent,
+		rate:       cfg.Rate,
+		retries:    cfg.Retries,
+	}
+}
+
+// Search returns trials matching a full-text query, optionally filtered by status.
+// limit 0 uses the default of 20.
+func (c *Client) Search(ctx context.Context, query, status string, limit int) ([]Trial, error) {
+	params := url.Values{"format": {"json"}}
+	if query != "" {
+		params.Set("query.term", query)
+	}
+	if status != "" {
+		params.Set("filter.overallStatus", status)
+	}
+	return c.collectStudies(ctx, params, effectiveLimit(limit, 20))
+}
+
+// Conditions returns trials for a medical condition.
+func (c *Client) Conditions(ctx context.Context, cond, status string, limit int) ([]Trial, error) {
+	params := url.Values{"format": {"json"}}
+	if cond != "" {
+		params.Set("query.cond", cond)
+	}
+	if status != "" {
+		params.Set("filter.overallStatus", status)
+	}
+	return c.collectStudies(ctx, params, effectiveLimit(limit, 20))
+}
+
+// Recruiting returns currently recruiting trials.
+func (c *Client) Recruiting(ctx context.Context, limit int) ([]Trial, error) {
+	params := url.Values{
+		"format":               {"json"},
+		"filter.overallStatus": {"RECRUITING"},
+	}
+	return c.collectStudies(ctx, params, effectiveLimit(limit, 20))
+}
+
+// Trial returns a single study by NCT ID.
+func (c *Client) Trial(ctx context.Context, nctID string) (TrialDetail, error) {
+	nctID = normalizeNCT(nctID)
+	rawURL := c.baseURL + "/studies/" + url.PathEscape(nctID) + "?format=json"
+	var s wireStudy
+	if err := c.getJSON(ctx, rawURL, &s); err != nil {
+		return TrialDetail{}, fmt.Errorf("trial %s: %w", nctID, err)
+	}
+	return wireToTrialDetail(s), nil
+}
+
+// ─── pagination ──────────────────────────────────────────────────────────────
+
+func (c *Client) collectStudies(ctx context.Context, params url.Values, limit int) ([]Trial, error) {
+	pageSize := limit
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	params.Set("pageSize", strconv.Itoa(pageSize))
+
+	var studies []Trial
+	token := ""
+	for {
+		page := url.Values{}
+		for k, v := range params {
+			page[k] = v
+		}
+		if token != "" {
+			page.Set("pageToken", token)
+		}
+
+		rawURL := c.baseURL + "/studies?" + page.Encode()
+		var resp wireResponse
+		if err := c.getJSON(ctx, rawURL, &resp); err != nil {
+			return studies, err
+		}
+		for _, s := range resp.Studies {
+			rank := len(studies) + 1
+			studies = append(studies, wireToTrial(s, rank))
+			if len(studies) >= limit {
+				return studies, nil
+			}
+		}
+		if resp.NextPageToken == "" || len(resp.Studies) == 0 {
+			break
+		}
+		token = resp.NextPageToken
+	}
+	return studies, nil
+}
+
+// ─── HTTP ─────────────────────────────────────────────────────────────────────
+
+func (c *Client) get(ctx context.Context, rawURL string) ([]byte, error) {
 	var lastErr error
-	for attempt := 0; attempt <= c.Retries; attempt++ {
+	for attempt := 0; attempt <= c.retries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -54,7 +170,7 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 			case <-time.After(backoff(attempt)):
 			}
 		}
-		body, retry, err := c.do(ctx, url)
+		body, retry, err := c.do(ctx, rawURL)
 		if err == nil {
 			return body, nil
 		}
@@ -63,46 +179,61 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("get %s: %w", url, lastErr)
+	return nil, fmt.Errorf("get %s: %w", rawURL, lastErr)
 }
 
-func (c *Client) do(ctx context.Context, url string) (body []byte, retry bool, err error) {
+func (c *Client) do(ctx context.Context, rawURL string) ([]byte, bool, error) {
 	c.pace()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, false, err
 	}
-	req.Header.Set("User-Agent", c.UserAgent)
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, true, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, ErrNotFound
+	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 		return nil, true, fmt.Errorf("http %d", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("http %d", resp.StatusCode)
 	}
-
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, true, err
 	}
 	return b, false, nil
 }
 
-// pace blocks until at least Rate has passed since the previous request.
 func (c *Client) pace() {
-	if c.Rate <= 0 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rate <= 0 {
 		return
 	}
-	if wait := c.Rate - time.Since(c.last); wait > 0 {
+	if wait := c.rate - time.Since(c.last); wait > 0 {
 		time.Sleep(wait)
 	}
 	c.last = time.Now()
+}
+
+func (c *Client) getJSON(ctx context.Context, rawURL string, v any) error {
+	body, err := c.get(ctx, rawURL)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return fmt.Errorf("decode %s: %w", rawURL, err)
+	}
+	return nil
 }
 
 func backoff(attempt int) time.Duration {
@@ -111,4 +242,11 @@ func backoff(attempt int) time.Duration {
 		d = 5 * time.Second
 	}
 	return d
+}
+
+func effectiveLimit(n, def int) int {
+	if n > 0 {
+		return n
+	}
+	return def
 }
