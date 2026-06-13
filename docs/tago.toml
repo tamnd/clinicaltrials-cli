@@ -1,0 +1,10 @@
+title       = "ct"
+baseURL     = "https://clinicaltrials-cli.tamnd.com/"
+description = "Search ClinicalTrials.gov clinical studies"
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/clinicaltrials-cli"
