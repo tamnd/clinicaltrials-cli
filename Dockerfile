@@ -12,10 +12,10 @@ ARG TARGETPLATFORM
 
 # ca-certificates for HTTPS; tzdata for sane timestamps.
 RUN apk add --no-cache ca-certificates tzdata \
- && adduser -D -H -u 10001 ct
+ && adduser -D -H -u 10001 clinicaltrials
 
-COPY $TARGETPLATFORM/ct /usr/bin/ct
+COPY $TARGETPLATFORM/clinicaltrials /usr/bin/clinicaltrials
 
-USER ct
+USER clinicaltrials
 
-ENTRYPOINT ["/usr/bin/ct"]
+ENTRYPOINT ["/usr/bin/clinicaltrials"]

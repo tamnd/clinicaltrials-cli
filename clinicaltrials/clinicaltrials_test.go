@@ -1,4 +1,4 @@
-package clinicaltrials
+package clinicaltrials_test
 
 import (
 	"context"
@@ -7,13 +7,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tamnd/clinicaltrials-cli/clinicaltrials"
 )
 
-func newTestClient(ts *httptest.Server) *Client {
-	cfg := DefaultConfig()
+func newTestClient(ts *httptest.Server) *clinicaltrials.Client {
+	cfg := clinicaltrials.DefaultConfig()
 	cfg.BaseURL = ts.URL
 	cfg.Rate = 0
-	return NewClient(cfg)
+	return clinicaltrials.NewClient(cfg)
 }
 
 const minimalStudyJSON = `{
@@ -26,19 +28,14 @@ const minimalStudyJSON = `{
     "statusModule": {
       "overallStatus": "RECRUITING",
       "startDateStruct": { "date": "2023-01-01" },
-      "completionDateStruct": { "date": "2025-12-31" },
-      "lastUpdatePostDateStruct": { "date": "2024-06-01" }
+      "completionDateStruct": { "date": "2025-12-31" }
     },
     "conditionsModule": { "conditions": ["Diabetes", "Hypertension"] },
-    "designModule": { "phases": ["PHASE3"], "studyType": "INTERVENTIONAL" },
+    "designModule": { "phases": ["PHASE3"], "studyType": "INTERVENTIONAL", "enrollmentInfo": { "count": 100 } },
     "sponsorCollaboratorsModule": {
       "leadSponsor": { "name": "NIH", "class": "NIH" }
     },
-    "descriptionModule": { "briefSummary": "A study summary." },
-    "eligibilityModule": { "sex": "ALL", "minimumAge": "18 Years", "maximumAge": "75 Years" },
-    "contactsLocationsModule": {
-      "locations": [{ "country": "United States", "facility": "Test Center" }]
-    }
+    "descriptionModule": { "briefSummary": "A study summary." }
   }
 }`
 
@@ -47,39 +44,45 @@ func TestGetSendsUserAgent(t *testing.T) {
 		if r.Header.Get("User-Agent") == "" {
 			t.Error("request carried no User-Agent")
 		}
-		_, _ = w.Write([]byte(`{"totalCount":0,"studies":[]}`))
+		_, _ = w.Write([]byte(`{"studies":[]}`))
 	}))
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	_, err := c.Search(context.Background(), "test", "", 5)
+	_, err := c.Search(context.Background(), "test", "", "", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestSearchReturnsTrials(t *testing.T) {
+func TestSearchReturnsStudies(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"totalCount":1,"studies":[` + minimalStudyJSON + `]}`))
+		_, _ = w.Write([]byte(`{"studies":[` + minimalStudyJSON + `]}`))
 	}))
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	trials, err := c.Search(context.Background(), "diabetes", "", 2)
+	studies, err := c.Search(context.Background(), "diabetes", "", "", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(trials) != 1 {
-		t.Fatalf("got %d trials, want 1", len(trials))
+	if len(studies) != 1 {
+		t.Fatalf("got %d studies, want 1", len(studies))
 	}
-	if trials[0].NCTID != "NCT12345678" {
-		t.Errorf("NCTID = %q, want NCT12345678", trials[0].NCTID)
+	if studies[0].NCTID != "NCT12345678" {
+		t.Errorf("NCTID = %q, want NCT12345678", studies[0].NCTID)
 	}
-	if trials[0].Rank != 1 {
-		t.Errorf("Rank = %d, want 1", trials[0].Rank)
+	if studies[0].OverallStatus != "RECRUITING" {
+		t.Errorf("OverallStatus = %q, want RECRUITING", studies[0].OverallStatus)
 	}
-	if trials[0].Status != "RECRUITING" {
-		t.Errorf("Status = %q, want RECRUITING", trials[0].Status)
+	if studies[0].Phase != "PHASE3" {
+		t.Errorf("Phase = %q, want PHASE3", studies[0].Phase)
+	}
+	if studies[0].Enrollment != 100 {
+		t.Errorf("Enrollment = %d, want 100", studies[0].Enrollment)
+	}
+	if studies[0].LeadSponsor != "NIH" {
+		t.Errorf("LeadSponsor = %q, want NIH", studies[0].LeadSponsor)
 	}
 }
 
@@ -88,33 +91,31 @@ func TestSearchFollowsPagination(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.URL.Query().Get("pageToken") == "" {
-			// first page
-			_, _ = w.Write([]byte(`{"totalCount":2,"nextPageToken":"page2","studies":[` + minimalStudyJSON + `]}`))
+			_, _ = w.Write([]byte(`{"nextPageToken":"page2","studies":[` + minimalStudyJSON + `]}`))
 		} else {
-			// second page — return a study with a different NCT ID
 			s := strings.ReplaceAll(minimalStudyJSON, "NCT12345678", "NCT87654321")
-			_, _ = w.Write([]byte(`{"totalCount":2,"studies":[` + s + `]}`))
+			_, _ = w.Write([]byte(`{"studies":[` + s + `]}`))
 		}
 	}))
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	trials, err := c.Search(context.Background(), "test", "", 5)
+	studies, err := c.Search(context.Background(), "test", "", "", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(trials) != 2 {
-		t.Fatalf("got %d trials, want 2", len(trials))
+	if len(studies) != 2 {
+		t.Fatalf("got %d studies, want 2", len(studies))
 	}
 	if calls < 2 {
 		t.Errorf("expected at least 2 HTTP calls (pagination), got %d", calls)
 	}
-	if trials[1].NCTID != "NCT87654321" {
-		t.Errorf("second trial NCTID = %q, want NCT87654321", trials[1].NCTID)
+	if studies[1].NCTID != "NCT87654321" {
+		t.Errorf("second study NCTID = %q, want NCT87654321", studies[1].NCTID)
 	}
 }
 
-func TestTrialByID(t *testing.T) {
+func TestGetStudyByID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "NCT04368728") {
 			http.NotFound(w, r)
@@ -127,31 +128,41 @@ func TestTrialByID(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	detail, err := c.Trial(context.Background(), "NCT04368728")
+	study, err := c.GetStudy(context.Background(), "NCT04368728")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.NCTID != "NCT04368728" {
-		t.Errorf("NCTID = %q, want NCT04368728", detail.NCTID)
+	if study.NCTID != "NCT04368728" {
+		t.Errorf("NCTID = %q, want NCT04368728", study.NCTID)
 	}
-	if detail.Status != "COMPLETED" {
-		t.Errorf("Status = %q, want COMPLETED", detail.Status)
-	}
-	if detail.URL != "https://clinicaltrials.gov/study/NCT04368728" {
-		t.Errorf("URL = %q", detail.URL)
+	if study.OverallStatus != "COMPLETED" {
+		t.Errorf("OverallStatus = %q, want COMPLETED", study.OverallStatus)
 	}
 }
 
-func TestRecruitingFilter(t *testing.T) {
-	var gotStatus string
+func TestGetStudyNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotStatus = r.URL.Query().Get("filter.overallStatus")
-		_, _ = w.Write([]byte(`{"totalCount":0,"studies":[]}`))
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	_, err := c.Recruiting(context.Background(), 5)
+	_, err := c.GetStudy(context.Background(), "NCT00000000")
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+}
+
+func TestSearchStatusFilter(t *testing.T) {
+	var gotStatus string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStatus = r.URL.Query().Get("filter.overallStatus")
+		_, _ = w.Write([]byte(`{"studies":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.Search(context.Background(), "", "", "", "RECRUITING", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,19 +171,39 @@ func TestRecruitingFilter(t *testing.T) {
 	}
 }
 
-func TestNormalizeNCT(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"nct04368728", "NCT04368728"},
-		{"NCT04368728", "NCT04368728"},
-		{"04368728", "NCT04368728"},
+func TestSearchConditionParam(t *testing.T) {
+	var gotCond string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCond = r.URL.Query().Get("query.cond")
+		_, _ = w.Write([]byte(`{"studies":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.Search(context.Background(), "cancer", "", "", "", 5)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		got := normalizeNCT(tc.in)
-		if got != tc.want {
-			t.Errorf("normalizeNCT(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+	if gotCond != "cancer" {
+		t.Errorf("query.cond = %q, want cancer", gotCond)
+	}
+}
+
+func TestSearchInterventionParam(t *testing.T) {
+	var gotIntr string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIntr = r.URL.Query().Get("query.intr")
+		_, _ = w.Write([]byte(`{"studies":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.Search(context.Background(), "", "insulin", "", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotIntr != "insulin" {
+		t.Errorf("query.intr = %q, want insulin", gotIntr)
 	}
 }
 
@@ -184,18 +215,18 @@ func TestGetRetriesOn503(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		_, _ = w.Write([]byte(`{"totalCount":0,"studies":[]}`))
+		_, _ = w.Write([]byte(`{"studies":[]}`))
 	}))
 	defer srv.Close()
 
-	cfg := DefaultConfig()
+	cfg := clinicaltrials.DefaultConfig()
 	cfg.BaseURL = srv.URL
 	cfg.Rate = 0
 	cfg.Retries = 5
-	c := NewClient(cfg)
+	c := clinicaltrials.NewClient(cfg)
 
 	start := time.Now()
-	_, err := c.Search(context.Background(), "test", "", 5)
+	_, err := c.Search(context.Background(), "test", "", "", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}

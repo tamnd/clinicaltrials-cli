@@ -1,9 +1,10 @@
-// Package clinicaltrials is the library behind the ct command: the HTTP client,
-// request shaping, and the typed data models for ClinicalTrials.gov.
+// Package clinicaltrials is the library behind the clinicaltrials command: the
+// HTTP client, request shaping, and the typed data models for the
+// ClinicalTrials.gov REST API v2.
 //
-// The public REST API v2 at https://clinicaltrials.gov/api/v2 is fully open,
-// no authentication required. The client sets a real User-Agent, paces requests
-// to 200 ms by default, and retries 429/5xx with exponential backoff.
+// The public API at https://clinicaltrials.gov/api/v2 is fully open — no API
+// key, no authentication required. The client sets a real User-Agent, paces
+// requests at 500 ms by default, and retries 429/5xx with exponential backoff.
 package clinicaltrials
 
 import (
@@ -15,14 +16,16 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-const defaultBaseURL = "https://clinicaltrials.gov/api/v2"
+// Host is the ClinicalTrials.gov hostname.
+const Host = "clinicaltrials.gov"
 
 // DefaultUserAgent identifies the client to ClinicalTrials.gov.
-const DefaultUserAgent = "ct/dev (+https://github.com/tamnd/clinicaltrials-cli)"
+const DefaultUserAgent = "clinicaltrials/dev (+https://github.com/tamnd/clinicaltrials-cli)"
 
 // ErrNotFound is returned when the API returns a 404 for an NCT ID.
 var ErrNotFound = errors.New("not found")
@@ -39,9 +42,9 @@ type Config struct {
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		BaseURL:   defaultBaseURL,
+		BaseURL:   "https://" + Host,
 		UserAgent: DefaultUserAgent,
-		Rate:      200 * time.Millisecond,
+		Rate:      500 * time.Millisecond,
 		Retries:   3,
 		Timeout:   30 * time.Second,
 	}
@@ -62,7 +65,7 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	base := cfg.BaseURL
 	if base == "" {
-		base = defaultBaseURL
+		base = "https://" + Host
 	}
 	return &Client{
 		baseURL:    base,
@@ -73,61 +76,47 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// Search returns trials matching a full-text query, optionally filtered by status.
-// limit 0 uses the default of 20.
-func (c *Client) Search(ctx context.Context, query, status string, limit int) ([]Trial, error) {
+// Search returns studies matching condition, intervention, term, and/or status.
+// limit 0 uses the default of 10.
+func (c *Client) Search(ctx context.Context, condition, intervention, term, status string, limit int) ([]Study, error) {
 	params := url.Values{"format": {"json"}}
-	if query != "" {
-		params.Set("query.term", query)
+	if condition != "" {
+		params.Set("query.cond", condition)
+	}
+	if intervention != "" {
+		params.Set("query.intr", intervention)
+	}
+	if term != "" {
+		params.Set("query.term", term)
 	}
 	if status != "" {
 		params.Set("filter.overallStatus", status)
 	}
-	return c.collectStudies(ctx, params, effectiveLimit(limit, 20))
+	return c.collectStudies(ctx, params, effectiveLimit(limit, 10))
 }
 
-// Conditions returns trials for a medical condition.
-func (c *Client) Conditions(ctx context.Context, cond, status string, limit int) ([]Trial, error) {
-	params := url.Values{"format": {"json"}}
-	if cond != "" {
-		params.Set("query.cond", cond)
-	}
-	if status != "" {
-		params.Set("filter.overallStatus", status)
-	}
-	return c.collectStudies(ctx, params, effectiveLimit(limit, 20))
-}
-
-// Recruiting returns currently recruiting trials.
-func (c *Client) Recruiting(ctx context.Context, limit int) ([]Trial, error) {
-	params := url.Values{
-		"format":               {"json"},
-		"filter.overallStatus": {"RECRUITING"},
-	}
-	return c.collectStudies(ctx, params, effectiveLimit(limit, 20))
-}
-
-// Trial returns a single study by NCT ID.
-func (c *Client) Trial(ctx context.Context, nctID string) (TrialDetail, error) {
+// GetStudy returns a single study by NCT ID.
+func (c *Client) GetStudy(ctx context.Context, nctID string) (*Study, error) {
 	nctID = normalizeNCT(nctID)
-	rawURL := c.baseURL + "/studies/" + url.PathEscape(nctID) + "?format=json"
+	rawURL := c.baseURL + "/api/v2/studies/" + url.PathEscape(nctID) + "?format=json"
 	var s wireStudy
 	if err := c.getJSON(ctx, rawURL, &s); err != nil {
-		return TrialDetail{}, fmt.Errorf("trial %s: %w", nctID, err)
+		return nil, fmt.Errorf("study %s: %w", nctID, err)
 	}
-	return wireToTrialDetail(s), nil
+	study := toStudy(s)
+	return &study, nil
 }
 
 // ─── pagination ──────────────────────────────────────────────────────────────
 
-func (c *Client) collectStudies(ctx context.Context, params url.Values, limit int) ([]Trial, error) {
+func (c *Client) collectStudies(ctx context.Context, params url.Values, limit int) ([]Study, error) {
 	pageSize := limit
 	if pageSize > 100 {
 		pageSize = 100
 	}
 	params.Set("pageSize", strconv.Itoa(pageSize))
 
-	var studies []Trial
+	var studies []Study
 	token := ""
 	for {
 		page := url.Values{}
@@ -138,14 +127,13 @@ func (c *Client) collectStudies(ctx context.Context, params url.Values, limit in
 			page.Set("pageToken", token)
 		}
 
-		rawURL := c.baseURL + "/studies?" + page.Encode()
-		var resp wireResponse
+		rawURL := c.baseURL + "/api/v2/studies?" + page.Encode()
+		var resp wireListResponse
 		if err := c.getJSON(ctx, rawURL, &resp); err != nil {
 			return studies, err
 		}
 		for _, s := range resp.Studies {
-			rank := len(studies) + 1
-			studies = append(studies, wireToTrial(s, rank))
+			studies = append(studies, toStudy(s))
 			if len(studies) >= limit {
 				return studies, nil
 			}
@@ -249,4 +237,13 @@ func effectiveLimit(n, def int) int {
 		return n
 	}
 	return def
+}
+
+// normalizeNCT uppercases and ensures the NCT prefix.
+func normalizeNCT(id string) string {
+	id = strings.ToUpper(strings.TrimSpace(id))
+	if !strings.HasPrefix(id, "NCT") {
+		id = "NCT" + id
+	}
+	return id
 }

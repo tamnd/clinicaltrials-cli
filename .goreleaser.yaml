@@ -9,16 +9,16 @@
 # image; each manager lights up the moment its repository and token exist.
 version: 2
 
-project_name: ct
+project_name: clinicaltrials
 
 before:
   hooks:
     - go mod download
 
 builds:
-  - id: ct
-    binary: ct
-    main: ./cmd/ct
+  - id: clinicaltrials
+    binary: clinicaltrials
+    main: ./cmd/clinicaltrials
     env:
       - CGO_ENABLED=0
     flags:
@@ -43,7 +43,7 @@ builds:
 
 archives:
   - id: default
-    name_template: "ct_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}"
+    name_template: "clinicaltrials_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}"
     format_overrides:
       - goos: windows
         formats: [zip]
@@ -53,7 +53,7 @@ archives:
 
 nfpms:
   - id: linux-packages
-    package_name: ct
+    package_name: clinicaltrials
     file_name_template: "{{ .ConventionalFileName }}"
     vendor: tamnd
     homepage: https://github.com/tamnd/clinicaltrials-cli
@@ -68,11 +68,11 @@ nfpms:
     section: utils
     contents:
       - src: ./LICENSE
-        dst: /usr/share/doc/ct/LICENSE
+        dst: /usr/share/doc/clinicaltrials/LICENSE
 
 dockers_v2:
   - images:
-      - ghcr.io/tamnd/ct
+      - ghcr.io/tamnd/clinicaltrials
     tags:
       - "{{ .Version }}"
       - latest
@@ -90,7 +90,7 @@ dockers_v2:
       org.opencontainers.image.licenses: "Apache-2.0"
 
 homebrew_casks:
-  - name: ct
+  - name: clinicaltrials
     repository:
       owner: tamnd
       name: homebrew-tap

@@ -1,7 +1,7 @@
 # Build into bin/ (gitignored) so the binary never collides with the clinicaltrials/
 # source package at the repo root.
-BINARY  := bin/ct
-PKG     := ./cmd/ct
+BINARY  := bin/clinicaltrials
+PKG     := ./cmd/clinicaltrials
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
