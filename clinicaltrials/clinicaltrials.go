@@ -95,6 +95,32 @@ func (c *Client) Search(ctx context.Context, condition, intervention, term, stat
 	return c.collectStudies(ctx, params, effectiveLimit(limit, 10))
 }
 
+// Recruiting returns currently recruiting trials, optionally filtered by condition.
+// limit 0 uses the default of 10.
+func (c *Client) Recruiting(ctx context.Context, condition string, limit int) ([]Study, error) {
+	params := url.Values{
+		"format":               {"json"},
+		"filter.overallStatus": {"RECRUITING"},
+	}
+	if condition != "" {
+		params.Set("query.cond", condition)
+	}
+	return c.collectStudies(ctx, params, effectiveLimit(limit, 10))
+}
+
+// Conditions returns trials for a medical condition.
+// limit 0 uses the default of 10.
+func (c *Client) Conditions(ctx context.Context, condition, status string, limit int) ([]Study, error) {
+	params := url.Values{
+		"format":    {"json"},
+		"query.cond": {condition},
+	}
+	if status != "" {
+		params.Set("filter.overallStatus", status)
+	}
+	return c.collectStudies(ctx, params, effectiveLimit(limit, 10))
+}
+
 // GetStudy returns a single study by NCT ID.
 func (c *Client) GetStudy(ctx context.Context, nctID string) (*Study, error) {
 	nctID = normalizeNCT(nctID)

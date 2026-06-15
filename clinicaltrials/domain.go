@@ -53,6 +53,19 @@ func (Domain) Register(app *kit.App) {
 		Summary:  "Get full study details by NCT ID",
 		Args:     []kit.Arg{{Name: "nct_id", Help: "NCT ID (e.g. NCT05608876)"}},
 	}, getStudy)
+
+	kit.Handle(app, kit.OpMeta{
+		Name:    "recruiting",
+		Group:   "studies",
+		Summary: "List currently recruiting trials, optionally filtered by condition",
+	}, recruitingStudies)
+
+	kit.Handle(app, kit.OpMeta{
+		Name:    "conditions",
+		Group:   "studies",
+		Summary: "Search trials for a medical condition",
+		Args:    []kit.Arg{{Name: "condition", Help: "medical condition or disease name"}},
+	}, conditionsStudies)
 }
 
 // newClient builds a Client from the resolved kit Config.
@@ -89,6 +102,19 @@ type studyInput struct {
 	Client *Client `kit:"inject"`
 }
 
+type recruitingInput struct {
+	Condition string  `kit:"flag" help:"filter by condition/disease"`
+	Limit     int     `kit:"flag,inherit" help:"max results" default:"10"`
+	Client    *Client `kit:"inject"`
+}
+
+type conditionsInput struct {
+	Condition string  `kit:"arg" help:"medical condition or disease name"`
+	Status    string  `kit:"flag" help:"filter by status (RECRUITING, COMPLETED, etc.)"`
+	Limit     int     `kit:"flag,inherit" help:"max results" default:"10"`
+	Client    *Client `kit:"inject"`
+}
+
 // ─── handlers ────────────────────────────────────────────────────────────────
 
 func searchStudies(ctx context.Context, in searchInput, emit func(Study) error) error {
@@ -110,6 +136,32 @@ func getStudy(ctx context.Context, in studyInput, emit func(*Study) error) error
 		return mapErr(err)
 	}
 	return emit(s)
+}
+
+func recruitingStudies(ctx context.Context, in recruitingInput, emit func(Study) error) error {
+	studies, err := in.Client.Recruiting(ctx, in.Condition, in.Limit)
+	if err != nil {
+		return err
+	}
+	for _, s := range studies {
+		if err := emit(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func conditionsStudies(ctx context.Context, in conditionsInput, emit func(Study) error) error {
+	studies, err := in.Client.Conditions(ctx, in.Condition, in.Status, in.Limit)
+	if err != nil {
+		return err
+	}
+	for _, s := range studies {
+		if err := emit(s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────

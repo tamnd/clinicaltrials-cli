@@ -1,7 +1,9 @@
 # Build into bin/ (gitignored) so the binary never collides with the clinicaltrials/
 # source package at the repo root.
-BINARY  := bin/clinicaltrials
-PKG     := ./cmd/clinicaltrials
+BINARY     := bin/clinicaltrials
+CT_BINARY  := bin/ct
+PKG        := ./cmd/clinicaltrials
+CT_PKG     := ./cmd/ct
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -13,11 +15,13 @@ LDFLAGS := -s -w \
 .PHONY: build install test vet fmt clean run
 
 build:
-	@mkdir -p $(dir $(BINARY))
+	@mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(CT_BINARY) $(CT_PKG)
 
 install:
 	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" $(PKG)
+	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" $(CT_PKG)
 
 test:
 	go test ./...
