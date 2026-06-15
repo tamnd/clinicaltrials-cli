@@ -207,6 +207,64 @@ func TestSearchInterventionParam(t *testing.T) {
 	}
 }
 
+func TestRecruitingFilter(t *testing.T) {
+	var gotStatus string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStatus = r.URL.Query().Get("filter.overallStatus")
+		_, _ = w.Write([]byte(`{"studies":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.Recruiting(context.Background(), "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotStatus != "RECRUITING" {
+		t.Errorf("filter.overallStatus = %q, want RECRUITING", gotStatus)
+	}
+}
+
+func TestRecruitingConditionParam(t *testing.T) {
+	var gotCond string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCond = r.URL.Query().Get("query.cond")
+		_, _ = w.Write([]byte(`{"studies":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.Recruiting(context.Background(), "diabetes", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCond != "diabetes" {
+		t.Errorf("query.cond = %q, want diabetes", gotCond)
+	}
+}
+
+func TestConditionsParam(t *testing.T) {
+	var gotCond, gotStatus string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCond = r.URL.Query().Get("query.cond")
+		gotStatus = r.URL.Query().Get("filter.overallStatus")
+		_, _ = w.Write([]byte(`{"studies":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.Conditions(context.Background(), "Alzheimer disease", "RECRUITING", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCond != "Alzheimer disease" {
+		t.Errorf("query.cond = %q, want Alzheimer disease", gotCond)
+	}
+	if gotStatus != "RECRUITING" {
+		t.Errorf("filter.overallStatus = %q, want RECRUITING", gotStatus)
+	}
+}
+
 func TestGetRetriesOn503(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
